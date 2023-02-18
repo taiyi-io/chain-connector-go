@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	configFilename = "config.json"
+	configFilename = "test.json"
 	keyFilename    = "access_key.json"
 )
 
@@ -28,8 +28,9 @@ const (
 //		"port": 9100
 //	}
 type testConfig struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
+	Host  string `json:"host"`
+	Port  int    `json:"port"`
+	Debug bool   `json:"debug,omitempty"`
 }
 
 // Sample Access Key
@@ -63,7 +64,7 @@ func loadObject[T any](targetPath string) (obj T, err error) {
 func clearClientEnvironment() {
 }
 
-func prepareClientEnvironment() (c *ChainClient, r *rand.Rand, err error) {
+func prepareClientEnvironment() (c *ChainConnector, r *rand.Rand, err error) {
 	log.SetFlags(log.Ldate | log.Lmicroseconds)
 	clearClientEnvironment()
 	r = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -73,23 +74,24 @@ func prepareClientEnvironment() (c *ChainClient, r *rand.Rand, err error) {
 		return
 	}
 
-	type accessPayload struct {
-		PrivateData AccessPrivateData `json:"private_data"`
-	}
-	var access accessPayload
-	if access, err = loadObject[accessPayload](keyFilename); err != nil {
+	var access PrivateAccessPayload
+	if access, err = loadObject[PrivateAccessPayload](keyFilename); err != nil {
 		err = fmt.Errorf("load access key fail: %s", err.Error())
 		return
 	}
-	if c, err = NewClientFromAccess(access.PrivateData); err != nil {
-		err = fmt.Errorf("create client fail: %s", err.Error())
+	if c, err = NewConnectorFromAccess(access.PrivateData); err != nil {
+		err = fmt.Errorf("create connector fail: %s", err.Error())
 		return
+	}
+	if config.Debug {
+		//enable trace
+		c.SetTrace(true)
 	}
 	_, err = c.Connect(config.Host, config.Port)
 	return
 }
 
-func combineCRUD(id int, c *ChainClient, r *rand.Rand) (operates int, elapsed time.Duration, err error) {
+func combineCRUD(id int, c *ChainConnector, r *rand.Rand) (operates int, elapsed time.Duration, err error) {
 	const (
 		docCount    = 10
 		propertyAge = "age"
@@ -164,7 +166,7 @@ func combineCRUD(id int, c *ChainClient, r *rand.Rand) (operates int, elapsed ti
 			return
 		}
 	}
-	var queryRecords = func(c *ChainClient, caseName string, schemaName string,
+	var queryRecords = func(c *ChainConnector, caseName string, schemaName string,
 		condition QueryCondition, expectTotal int, expect []int) (err error) {
 		var records []Document
 		limit, offset, total := 0, 0, 0
@@ -245,7 +247,7 @@ func combineCRUD(id int, c *ChainClient, r *rand.Rand) (operates int, elapsed ti
 	return
 }
 
-func contractOperates(id int, c *ChainClient, r *rand.Rand, loopCount int, traceEnabled bool) (operates int, elapsed time.Duration, err error) {
+func contractOperates(id int, c *ChainConnector, r *rand.Rand, loopCount int, traceEnabled bool) (operates int, elapsed time.Duration, err error) {
 	const (
 		propertyCatalog   = "catalog"
 		propertyBalance   = "balance"
@@ -351,12 +353,32 @@ func contractOperates(id int, c *ChainClient, r *rand.Rand, loopCount int, trace
 	}
 	for i := 0; i < loopCount; i++ {
 		var createContractName = fmt.Sprintf("contract_create_%d_%d", id, i)
+		exists, err = c.HasContract(createContractName)
+		if exists {
+			if err = c.WithdrawContract(createContractName); err != nil {
+				err = fmt.Errorf("withdraw previous contract %s fail: %s", createContractName, err.Error())
+				return
+			}
+		}
+
 		if err = c.DeployContract(createContractName, createContract); err != nil {
 			err = fmt.Errorf("deploy contract fail: %s", err.Error())
 			return
 		}
 		operates++
+		if _, err = c.GetContract(createContractName); err != nil {
+			err = fmt.Errorf("get contract define fail: %s", err.Error())
+			return
+		}
+
 		var deleteContractName = fmt.Sprintf("contract_delete_%d_%d", id, i)
+		exists, err = c.HasContract(deleteContractName)
+		if exists {
+			if err = c.WithdrawContract(deleteContractName); err != nil {
+				err = fmt.Errorf("withdraw previous contract %s fail: %s", deleteContractName, err.Error())
+				return
+			}
+		}
 		if err = c.DeployContract(deleteContractName, deleteContract); err != nil {
 			err = fmt.Errorf("deploy contract fail: %s", err.Error())
 			return
@@ -373,11 +395,18 @@ func contractOperates(id int, c *ChainClient, r *rand.Rand, loopCount int, trace
 			fmt.Sprintf("%f", r.Float64()),
 		}
 		if traceEnabled {
-			if err = c.EnableContractTrace(createContractName); err != nil {
-				err = fmt.Errorf("enable trace fail: %s", err.Error())
+			var info ContractInfo
+			if info, err = c.GetContractInfo(createContractName); err != nil {
+				err = fmt.Errorf("get contract info fail: %s", err.Error())
 				return
 			}
-			operates++
+			if !info.Trace {
+				if err = c.EnableContractTrace(createContractName); err != nil {
+					err = fmt.Errorf("enable trace fail: %s", err.Error())
+					return
+				}
+				operates++
+			}
 		}
 		if err = c.CallContract(createContractName, parameters); err != nil {
 			err = fmt.Errorf("call create contract fail: %s", err.Error())
@@ -421,7 +450,7 @@ func contractOperates(id int, c *ChainClient, r *rand.Rand, loopCount int, trace
 	return
 }
 
-func walkAllBlocks(c *ChainClient, currentHeight uint64, maxCount int, stepLength uint64) (operates, walked int, elapsed time.Duration, err error) {
+func walkAllBlocks(c *ChainConnector, currentHeight uint64, maxCount int, stepLength uint64) (operates, walked int, elapsed time.Duration, err error) {
 	const (
 		lowestHeight = 1
 	)
@@ -466,7 +495,7 @@ func walkAllBlocks(c *ChainClient, currentHeight uint64, maxCount int, stepLengt
 	return
 }
 
-func walkBlockData(c *ChainClient, currentHeight uint64, maxCount int, stepLength uint64) (operates int, elapsed time.Duration, err error) {
+func walkBlockData(c *ChainConnector, currentHeight uint64, maxCount int, stepLength uint64) (operates int, elapsed time.Duration, err error) {
 	const (
 		lowestHeight = 1
 	)
@@ -516,7 +545,7 @@ func walkBlockData(c *ChainClient, currentHeight uint64, maxCount int, stepLengt
 	return
 }
 
-func walkTransactions(c *ChainClient, currentHeight uint64, maxCount int, stepLength uint64) (operates, processed int, elapsed time.Duration, err error) {
+func walkTransactions(c *ChainConnector, currentHeight uint64, maxCount int, stepLength uint64) (operates, processed int, elapsed time.Duration, err error) {
 	const (
 		lowestHeight  = 1
 		recordPerPage = 20
@@ -582,7 +611,7 @@ func walkTransactions(c *ChainClient, currentHeight uint64, maxCount int, stepLe
 	return
 }
 
-func TestChainClient_CRUD(t *testing.T) {
+func TestChainConnector_CRUD(t *testing.T) {
 	defer clearClientEnvironment()
 	client, r, err := prepareClientEnvironment()
 	if err != nil {
@@ -598,7 +627,7 @@ func TestChainClient_CRUD(t *testing.T) {
 	t.Logf("CRUD test: ok, %d opreates in %d millisecond(s), TPS %.2f", operates, ms, TPS)
 }
 
-func TestChainClient_CreateSchema(t *testing.T) {
+func TestChainConnector_CreateSchema(t *testing.T) {
 	const (
 		propertyInt    = "p_int"
 		propertyString = "p_string"
@@ -636,7 +665,7 @@ func TestChainClient_CreateSchema(t *testing.T) {
 	t.Log("create schema test: ok")
 }
 
-func TestChainClient_GetSchemaLogs(t *testing.T) {
+func TestChainConnector_GetSchemaLogs(t *testing.T) {
 	const (
 		propertyV1 = "aaa"
 		propertyV2 = "bbb"
@@ -719,7 +748,7 @@ func TestChainClient_GetSchemaLogs(t *testing.T) {
 	t.Log("get schema logs test: ok")
 }
 
-func TestChainClient_QuerySchemas(t *testing.T) {
+func TestChainConnector_QuerySchemas(t *testing.T) {
 	const (
 		schemaPrefix = "query_schemas"
 		propertyName = "demo"
@@ -774,7 +803,7 @@ func TestChainClient_QuerySchemas(t *testing.T) {
 	t.Log("query schemas test: ok")
 }
 
-func TestChainClient_QueryMassSchemas(t *testing.T) {
+func TestChainConnector_QueryMassSchemas(t *testing.T) {
 	const (
 		schemaPrefix = "query_mass_schemas"
 		propertyName = "demo"
@@ -855,7 +884,7 @@ func TestChainClient_QueryMassSchemas(t *testing.T) {
 		queryCount, schemaCount, elapsed, TPS)
 }
 
-func TestChainClient_QueryMassiveDocuments(t *testing.T) {
+func TestChainConnector_QueryMassiveDocuments(t *testing.T) {
 	const (
 		schemaPrefix      = "query_mass_documents"
 		propertyI         = "demo_int"
@@ -940,7 +969,7 @@ func TestChainClient_QueryMassiveDocuments(t *testing.T) {
 		queryCount, docCount, elapsed, TPS)
 }
 
-func TestChainClient_QueryMassiveIndexedDocuments(t *testing.T) {
+func TestChainConnector_QueryMassiveIndexedDocuments(t *testing.T) {
 	const (
 		schemaPrefix      = "query_mass_documents"
 		propertyI         = "demo_int"
@@ -1027,7 +1056,133 @@ func TestChainClient_QueryMassiveIndexedDocuments(t *testing.T) {
 		queryCount, docCount, elapsed, TPS)
 }
 
-func TestChainClient_DocumentOperates(t *testing.T) {
+func TestChainConnector_Actors(t *testing.T) {
+	defer clearClientEnvironment()
+	conn, _, err := prepareClientEnvironment()
+	if err != nil {
+		t.Fatalf("prepare fail: %s", err.Error())
+	}
+	const schemaName = "test-schema-actors"
+	var exists bool
+	{
+		if exists, err = conn.HasSchema(schemaName); err != nil {
+			t.Fatalf("check schema fail: %s", err.Error())
+		}
+		if exists {
+			if err = conn.DeleteSchema(schemaName); err != nil {
+				t.Fatalf("delete previous schema %s fail: %s", schemaName, err.Error())
+			}
+			t.Logf("previous schema %s deleted", schemaName)
+		}
+		var properties = []DocumentProperty{
+			{
+				Name: "name",
+				Type: PropertyTypeString,
+			},
+			{
+				Name: "age",
+				Type: PropertyTypeInteger,
+			},
+			{
+				Name: "available",
+				Type: PropertyTypeBoolean,
+			},
+		}
+		err = conn.CreateSchema(schemaName, properties)
+	}
+	var actors []ActorPrivileges
+	if actors, err = conn.GetSchemaActors(schemaName); err != nil {
+		t.Fatalf("get schema actors fail: %s", err.Error())
+	}
+	if 0 == len(actors) {
+		t.Fatal("no actor available in schema")
+	}
+	var currentGroup = actors[0].Group
+	var actorConfigure = []ActorPrivileges{
+		{
+			Group:    currentGroup,
+			Owner:    true,
+			Executor: true,
+			Updater:  true,
+			Viewer:   true,
+		},
+		{
+			Group:    "audit",
+			Owner:    false,
+			Executor: false,
+			Updater:  false,
+			Viewer:   true,
+		},
+		{
+			Group:    "runner",
+			Owner:    false,
+			Executor: true,
+			Updater:  true,
+			Viewer:   true,
+		},
+	}
+	if err = conn.UpdateSchemaActors(schemaName, actorConfigure); err != nil {
+		t.Fatalf("update schema actors fail: %s", err.Error())
+	}
+	var docID string
+	{
+		//add a document
+		var content = "{\"name\": \"hello\", \"age\": 20, \"available\": true}"
+		docID, err = conn.AddDocument(schemaName, "", content)
+		if err = conn.UpdateDocumentActors(schemaName, docID, actorConfigure); err != nil {
+			t.Fatalf("update doc actors fail: %s", err.Error())
+		}
+		if actors, err = conn.GetDocumentActors(schemaName, docID); err != nil {
+			t.Fatalf("get doc actors fail: %s", err.Error())
+		}
+		var output string
+		if output, err = json.MarshalToString(actors); err != nil {
+			t.Fatalf("marshal doc actors fail: %s", err.Error())
+		}
+		t.Logf("updated doc actors:\n%s\n", output)
+	}
+	{
+		var define = ContractDefine{
+			Steps: []ContractStep{
+				{
+					Action: "delete_doc",
+					Params: []string{"@1", "@2"},
+				},
+				{
+					Action: "submit",
+				},
+			},
+		}
+		var contractName = schemaName
+		if exists, err = conn.HasContract(contractName); err != nil {
+			t.Fatalf("check contract fail: %s", err.Error())
+		} else if exists {
+			if err = conn.WithdrawContract(contractName); err != nil {
+				t.Fatalf("withdraw previous contract %s fail: %s", contractName, err.Error())
+			}
+		}
+		if err = conn.DeployContract(contractName, define); err != nil {
+			t.Fatalf("deploy contract fail: %s", err.Error())
+		}
+		if err = conn.UpdateContractActors(contractName, actorConfigure); err != nil {
+			t.Fatalf("update contract actors fail: %s", err.Error())
+		}
+		if actors, err = conn.GetContractActors(contractName); err != nil {
+			t.Fatalf("get contract actors fail: %s", err.Error())
+		}
+		var output string
+		if output, err = json.MarshalToString(actors); err != nil {
+			t.Fatalf("marshal contract actors fail: %s", err.Error())
+		}
+		t.Logf("updated contract actors:\n%s\n", output)
+	}
+	if err = conn.DeleteSchema(schemaName); err != nil {
+		t.Fatalf("delete schema fail: %s", err.Error())
+	}
+	t.Log("Test actor functions: pass")
+}
+
+func TestChainConnector_DocumentOperates(t *testing.T) {
 	type testDocument struct {
 		IntProperty    int     `json:"int_property"`
 		BoolProperty   bool    `json:"bool_property"`
@@ -1192,7 +1347,7 @@ func TestChainClient_DocumentOperates(t *testing.T) {
 	t.Log("document operates test: ok")
 }
 
-func TestChainClient_ErrorResult(t *testing.T) {
+func TestChainConnector_ErrorResult(t *testing.T) {
 	defer clearClientEnvironment()
 	client, r, err := prepareClientEnvironment()
 	if err != nil {
@@ -1223,7 +1378,7 @@ func TestChainClient_ErrorResult(t *testing.T) {
 	t.Log("error result test: ok")
 }
 
-func TestChainClient_HasSchemaAndDocument(t *testing.T) {
+func TestChainConnector_HasSchemaAndDocument(t *testing.T) {
 	defer clearClientEnvironment()
 	client, r, err := prepareClientEnvironment()
 	if err != nil {
@@ -1281,7 +1436,7 @@ func TestChainClient_HasSchemaAndDocument(t *testing.T) {
 	t.Log("check schema and doc test: ok")
 }
 
-func TestChainClient_QueryDocumentsFilteredByMultiProperties(t *testing.T) {
+func TestChainConnector_QueryDocumentsFilteredByMultiProperties(t *testing.T) {
 	const (
 		stringProperty    = "s"
 		intProperty       = "i"
@@ -1406,7 +1561,7 @@ func TestChainClient_QueryDocumentsFilteredByMultiProperties(t *testing.T) {
 	t.Log("query documents filtered by multi properties: ok")
 }
 
-func TestChainClient_QueryIndexedDocumentsFilteredByMultiProperties(t *testing.T) {
+func TestChainConnector_QueryIndexedDocumentsFilteredByMultiProperties(t *testing.T) {
 	const (
 		stringProperty    = "s"
 		intProperty       = "i"
@@ -1535,7 +1690,7 @@ func TestChainClient_QueryIndexedDocumentsFilteredByMultiProperties(t *testing.T
 	t.Log("query indexed documents filtered by multi properties: ok")
 }
 
-func TestChainClient_RebuildIndex(t *testing.T) {
+func TestChainConnector_RebuildIndex(t *testing.T) {
 	const ()
 	type car struct {
 		Brand     string `json:"brand"`
@@ -1823,7 +1978,7 @@ func TestChainClient_RebuildIndex(t *testing.T) {
 	t.Log("test rebuilding: ok")
 }
 
-func TestChainClient_QueryDocumentsFilteredByMultiPropertiesWithOrder(t *testing.T) {
+func TestChainConnector_QueryDocumentsFilteredByMultiPropertiesWithOrder(t *testing.T) {
 	const (
 		stringProperty    = "s"
 		intProperty       = "i"
@@ -1949,7 +2104,7 @@ func TestChainClient_QueryDocumentsFilteredByMultiPropertiesWithOrder(t *testing
 	t.Log("query documents filtered by multi properties: ok")
 }
 
-func TestChainClient_QueryIndexedDocumentsFilteredByMultiPropertiesWithOrder(t *testing.T) {
+func TestChainConnector_QueryIndexedDocumentsFilteredByMultiPropertiesWithOrder(t *testing.T) {
 	const (
 		stringProperty    = "s"
 		intProperty       = "i"
@@ -2079,7 +2234,7 @@ func TestChainClient_QueryIndexedDocumentsFilteredByMultiPropertiesWithOrder(t *
 	t.Log("query indexed documents filtered by multi properties: ok")
 }
 
-func TestChainClient_QueryDocumentsPagination(t *testing.T) {
+func TestChainConnector_QueryDocumentsPagination(t *testing.T) {
 	const (
 		stringProperty = "s"
 		intProperty    = "i"
@@ -2148,7 +2303,7 @@ func TestChainClient_QueryDocumentsPagination(t *testing.T) {
 	t.Log("query documents pagination: ok")
 }
 
-func TestChainClient_QueryDocumentsPaginationSortByInteger(t *testing.T) {
+func TestChainConnector_QueryDocumentsPaginationSortByInteger(t *testing.T) {
 	const (
 		stringProperty = "s"
 		intProperty    = "i"
@@ -2226,7 +2381,7 @@ func TestChainClient_QueryDocumentsPaginationSortByInteger(t *testing.T) {
 	t.Log("query documents pagination sort by integer: ok")
 }
 
-func TestChainClient_QueryContracts(t *testing.T) {
+func TestChainConnector_QueryContracts(t *testing.T) {
 	const (
 		recordStart = 0
 		maxRecord   = 20
@@ -2248,7 +2403,7 @@ func TestChainClient_QueryContracts(t *testing.T) {
 	}
 }
 
-func TestChainClient_ConcurrentAddDocument(t *testing.T) {
+func TestChainConnector_ConcurrentAddDocument(t *testing.T) {
 	const (
 		IntProperty    = "int_property"
 		BoolProperty   = "bool_property"
@@ -2350,7 +2505,7 @@ func TestChainClient_ConcurrentAddDocument(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_ConcurrentUpdateDifferentDocument(t *testing.T) {
+func TestChainConnector_ConcurrentUpdateDifferentDocument(t *testing.T) {
 	const (
 		IntProperty    = "int_property"
 		BoolProperty   = "bool_property"
@@ -2458,7 +2613,7 @@ func TestChainClient_ConcurrentUpdateDifferentDocument(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_ConcurrentUpdateSameDocument(t *testing.T) {
+func TestChainConnector_ConcurrentUpdateSameDocument(t *testing.T) {
 	const (
 		IntProperty    = "int_property"
 		BoolProperty   = "bool_property"
@@ -2565,7 +2720,7 @@ func TestChainClient_ConcurrentUpdateSameDocument(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_ConcurrentCRUDCombination(t *testing.T) {
+func TestChainConnector_ConcurrentCRUDCombination(t *testing.T) {
 	const (
 		//for 1 hour load test
 		//requestCount = 1000
@@ -2656,7 +2811,7 @@ func TestChainClient_ConcurrentCRUDCombination(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_ConcurrentContractOperations(t *testing.T) {
+func TestChainConnector_ConcurrentContractOperations(t *testing.T) {
 	const (
 		//for 1 hour load test
 		//requestCount = 1000
@@ -2736,7 +2891,7 @@ func TestChainClient_ConcurrentContractOperations(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func BenchmarkChainClient_AddDocument(b *testing.B) {
+func BenchmarkChainConnector_AddDocument(b *testing.B) {
 	type testDocument struct {
 		IntProperty    int     `json:"int_property"`
 		BoolProperty   bool    `json:"bool_property"`
@@ -2806,7 +2961,7 @@ func BenchmarkChainClient_AddDocument(b *testing.B) {
 		b.N, elapsed, TPS)
 }
 
-func BenchmarkChainClient_UpdateDocument(b *testing.B) {
+func BenchmarkChainConnector_UpdateDocument(b *testing.B) {
 	type testDocument struct {
 		IntProperty    int     `json:"int_property"`
 		BoolProperty   bool    `json:"bool_property"`
@@ -2896,7 +3051,7 @@ func BenchmarkChainClient_UpdateDocument(b *testing.B) {
 		b.N, elapsed, TPS)
 }
 
-func BenchmarkChainClient_RemoveDocument(b *testing.B) {
+func BenchmarkChainConnector_RemoveDocument(b *testing.B) {
 	type testDocument struct {
 		IntProperty    int     `json:"int_property"`
 		BoolProperty   bool    `json:"bool_property"`
@@ -2975,7 +3130,7 @@ func BenchmarkChainClient_RemoveDocument(b *testing.B) {
 		b.N, elapsed, TPS)
 }
 
-func BenchmarkChainClient_CRUD(b *testing.B) {
+func BenchmarkChainConnector_CRUD(b *testing.B) {
 	defer clearClientEnvironment()
 	client, r, err := prepareClientEnvironment()
 	if err != nil {
@@ -2996,7 +3151,7 @@ func BenchmarkChainClient_CRUD(b *testing.B) {
 	b.Logf("benchmark CURD: ok, %d operates in %d millisecond(s), TPS %.2f", totalOperates, elapsed, TPS)
 }
 
-func BenchmarkChainClient_Contracts(b *testing.B) {
+func BenchmarkChainConnector_Contracts(b *testing.B) {
 	const (
 		loopCount = 10
 	)
@@ -3020,7 +3175,7 @@ func BenchmarkChainClient_Contracts(b *testing.B) {
 	b.Logf("benchmark contract operates: ok, %d operates in %d millisecond(s), TPS %.2f", totalOperates, elapsed, TPS)
 }
 
-func TestChainClient_Activate(t *testing.T) {
+func TestChainConnector_Activate(t *testing.T) {
 	defer clearClientEnvironment()
 	client, _, err := prepareClientEnvironment()
 	if err != nil {
@@ -3033,7 +3188,7 @@ func TestChainClient_Activate(t *testing.T) {
 	t.Log("activate test: ok")
 }
 
-func TestChainClient_QueryBlocks(t *testing.T) {
+func TestChainConnector_QueryBlocks(t *testing.T) {
 	const (
 		testCount = 100
 		pageSize  = 20
@@ -3059,7 +3214,7 @@ func TestChainClient_QueryBlocks(t *testing.T) {
 		operates, ms, TPS, walked)
 }
 
-func TestChainClient_ConcurrentQueryBlocks(t *testing.T) {
+func TestChainConnector_ConcurrentQueryBlocks(t *testing.T) {
 	const (
 		requestCount = 50
 		routineCount = 10
@@ -3143,7 +3298,7 @@ func TestChainClient_ConcurrentQueryBlocks(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_GetBlocks(t *testing.T) {
+func TestChainConnector_GetBlocks(t *testing.T) {
 	const (
 		testCount = 100
 		pageSize  = 20
@@ -3169,7 +3324,7 @@ func TestChainClient_GetBlocks(t *testing.T) {
 		operates, ms, TPS)
 }
 
-func TestChainClient_ConcurrentGetBlocks(t *testing.T) {
+func TestChainConnector_ConcurrentGetBlocks(t *testing.T) {
 	const (
 		requestCount = 50
 		routineCount = 10
@@ -3251,7 +3406,7 @@ func TestChainClient_ConcurrentGetBlocks(t *testing.T) {
 		total, elapsed, tps)
 }
 
-func TestChainClient_GetTransactions(t *testing.T) {
+func TestChainConnector_GetTransactions(t *testing.T) {
 	const (
 		testCount = 100
 		pageSize  = 20
@@ -3277,7 +3432,7 @@ func TestChainClient_GetTransactions(t *testing.T) {
 		records, ms, operates, TPS)
 }
 
-func TestChainClient_ConcurrentGetTransactions(t *testing.T) {
+func TestChainConnector_ConcurrentGetTransactions(t *testing.T) {
 	const (
 		requestCount = 50
 		routineCount = 20

@@ -1,4 +1,4 @@
-module github.com/taiyi-io/client-go
+module github.com/taiyi-io/chain-connector-go
 
 go 1.18
 
