@@ -1,5 +1,13 @@
 # Client SDK Changelog
 
+## [0.2.1] - 2023-02-24
+
+### Added
+
+- Add project option to test.json
+- Add SetProject to connector
+- Add test.json for testing
+
 ## [0.2.0] - 2023-02-18
 
 ### Added

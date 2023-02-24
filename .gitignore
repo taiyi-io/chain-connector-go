@@ -10,7 +10,6 @@
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-*.json
 *.bak
 
 .idea
@@ -19,5 +18,6 @@ config
 certificate
 log
 pkg
-client*
-build_*
+
+# Access Key
+access_key.json

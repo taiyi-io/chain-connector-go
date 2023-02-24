@@ -28,9 +28,10 @@ const (
 //		"port": 9100
 //	}
 type testConfig struct {
-	Host  string `json:"host"`
-	Port  int    `json:"port"`
-	Debug bool   `json:"debug,omitempty"`
+	Project string `json:"project,omitempty"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Debug   bool   `json:"debug,omitempty"`
 }
 
 // Sample Access Key
@@ -82,6 +83,9 @@ func prepareClientEnvironment() (c *ChainConnector, r *rand.Rand, err error) {
 	if c, err = NewConnectorFromAccess(access.PrivateData); err != nil {
 		err = fmt.Errorf("create connector fail: %s", err.Error())
 		return
+	}
+	if "" != config.Project {
+		c.SetProject(config.Project)
 	}
 	if config.Debug {
 		//enable trace

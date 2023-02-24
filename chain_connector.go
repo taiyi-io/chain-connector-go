@@ -39,8 +39,8 @@ const (
 )
 
 const (
-	ProjectName                   = "Taiyi"
-	SDKVersion                    = "0.2.0"
+	defaultProjectName            = "Taiyi"
+	SDKVersion                    = "0.2.1"
 	ApiVersion                    = 1
 	DefaultDomainName             = "system"
 	DefaultDomainHost             = "localhost"
@@ -317,16 +317,13 @@ func NewConnector(accessID string, privateKey []byte) (connector *ChainConnector
 		Transport: t,
 	}
 	connector = &ChainConnector{
-		accessID:                     accessID,
-		privateKey:                   privateKey,
-		innerClient:                  innerClient,
-		apiBase:                      "",
-		headerNameSession:            fmt.Sprintf("%s-Session", ProjectName),
-		headerNameTimestamp:          fmt.Sprintf("%s-Timestamp", ProjectName),
-		headerNameSignature:          fmt.Sprintf("%s-Signature", ProjectName),
-		headerNameSignatureAlgorithm: fmt.Sprintf("%s-SignatureAlgorithm", ProjectName),
-		traceEnabled:                 false,
+		accessID:     accessID,
+		privateKey:   privateKey,
+		innerClient:  innerClient,
+		apiBase:      "",
+		traceEnabled: false,
 	}
+	connector.SetProject(defaultProjectName)
 	return
 }
 
@@ -336,6 +333,13 @@ func (connector *ChainConnector) GetVersion() string {
 
 func (connector *ChainConnector) SetTrace(enabled bool) {
 	connector.traceEnabled = enabled
+}
+
+func (connector *ChainConnector) SetProject(projectName string) {
+	connector.headerNameSession = fmt.Sprintf("%s-Session", projectName)
+	connector.headerNameTimestamp = fmt.Sprintf("%s-Timestamp", projectName)
+	connector.headerNameSignature = fmt.Sprintf("%s-Signature", projectName)
+	connector.headerNameSignatureAlgorithm = fmt.Sprintf("%s-SignatureAlgorithm", projectName)
 }
 
 func (connector *ChainConnector) Connect(host string, port int) (timeout int, err error) {
